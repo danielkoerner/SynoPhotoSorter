@@ -11,6 +11,9 @@ except ImportError:
     print("Please install exifread: python3 -m pip install --user exifread")
     sys.exit(1)
 
+# Get the directory where the script is located
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # Dynamically determine current home directory
 HOME_DIR = os.path.expanduser("~")
 
@@ -27,7 +30,7 @@ REGULAR_EXTS = {'jpg', 'jpeg', 'png', 'heic', 'mov', 'mp4', 'gif', 'avi', 'mpg',
 EXCLUDE_DIRS = {'@eaDir'}
 
 logging.basicConfig(
-    filename='photo_sorter.log',
+    filename=os.path.join(SCRIPT_DIR, 'photo_sorter.log'),
     format='%(asctime)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
