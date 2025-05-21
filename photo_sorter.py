@@ -3,7 +3,9 @@ import shutil
 from datetime import datetime
 import logging
 import sys
-from typing import Optional
+from typing import Optional, List
+import logging.handlers
+import glob
 
 try:
     import exifread
@@ -13,27 +15,65 @@ except ImportError:
 
 # Get the directory where the script is located
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+LOGS_DIR = os.path.join(SCRIPT_DIR, 'logs')
+
+# Create logs directory if it doesn't exist
+os.makedirs(LOGS_DIR, exist_ok=True)
 
 # Dynamically determine current home directory
 HOME_DIR = os.path.expanduser("~")
 
-# Construct paths dynamically
-SOURCE_FOLDER = os.path.join(HOME_DIR, 'Photos', 'MobileBackup')
-RAW_BASE = os.path.join(HOME_DIR, 'Photos_RAW')
-REGULAR_BASE = os.path.join(HOME_DIR, 'Photos')
+# Construct paths
+SOURCE_FOLDERS = [
+    os.path.join(HOME_DIR, 'Photos', 'MobileBackup'),
+    os.path.join(HOME_DIR, 'Photos', 'PhotoLibrary')
+]
+PHOTOS_BASE = os.path.join(HOME_DIR, 'Photos')
 
 # File extensions for different types of images/videos
-RAW_EXTS = {'cr2', 'cr3', 'nef', 'arw', 'dng', 'raf', 'rw2'}
-REGULAR_EXTS = {'jpg', 'jpeg', 'png', 'heic', 'mov', 'mp4', 'gif', 'avi', 'mpg', 'mpeg'}
+MEDIA_EXTS = {'jpg', 'jpeg', 'png', 'heic', 'mov', 'mp4', 'gif', 'avi', 'mpg', 'mpeg',
+              'cr2', 'cr3', 'nef', 'arw', 'dng', 'raf', 'rw2'}
 
 # Synology specific directories to exclude
 EXCLUDE_DIRS = {'@eaDir'}
 
-logging.basicConfig(
-    filename=os.path.join(SCRIPT_DIR, 'photo_sorter.log'),
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+def cleanup_old_logs(max_logs: int = 30):
+    """
+    Clean up old log files, keeping only the most recent ones.
+    
+    Args:
+        max_logs: Maximum number of log files to keep
+    """
+    log_files = glob.glob(os.path.join(LOGS_DIR, 'photo_sorter_*.log'))
+    log_files.sort(reverse=True)  # Sort newest first
+    
+    # Remove old log files
+    for old_log in log_files[max_logs:]:
+        try:
+            os.remove(old_log)
+        except Exception as e:
+            print(f"Failed to remove old log file {old_log}: {e}")
+
+# Configure logging to output to both file and console
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Create a new log file with timestamp
+timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+log_file = os.path.join(LOGS_DIR, f'photo_sorter_{timestamp}.log')
+
+# File handler
+file_handler = logging.FileHandler(log_file)
+file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+logger.addHandler(file_handler)
+
+# Console handler
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setFormatter(logging.Formatter('%(message)s'))
+logger.addHandler(console_handler)
+
+# Clean up old logs
+cleanup_old_logs()
 
 def get_date_taken(path: str) -> Optional[datetime]:
     """
@@ -53,13 +93,13 @@ def get_date_taken(path: str) -> Optional[datetime]:
             if date_taken:
                 return datetime.strptime(str(date_taken), '%Y:%m:%d %H:%M:%S')
     except Exception as e:
-        logging.warning(f"Failed to read EXIF data for {path}: {e}")
+        logger.warning(f"Failed to read EXIF data for {path}: {e}")
 
     try:
         mtime = os.path.getmtime(path)
         return datetime.fromtimestamp(mtime)
     except Exception as e:
-        logging.error(f"Failed to read file modification date for {path}: {e}")
+        logger.error(f"Failed to read file modification date for {path}: {e}")
         return None
 
 def move_file(src: str, dest: str) -> None:
@@ -85,14 +125,40 @@ def move_file(src: str, dest: str) -> None:
             counter += 1
 
     shutil.move(src, dest_path)
-    logging.info(f"Moved: {src} -> {dest_path}")
+    logger.info(f"Moved: {src} -> {dest_path}")
 
-def main() -> None:
+def remove_empty_dirs(path: str) -> None:
     """
-    Main function that walks through the source folder and organizes photos/videos
-    into date-based directory structure.
+    Remove empty directories recursively from bottom up.
+    
+    Args:
+        path: Starting path to check for empty directories
     """
-    for root, dirs, files in os.walk(SOURCE_FOLDER):
+    for root, dirs, files in os.walk(path, topdown=False):
+        for dir_name in dirs:
+            dir_path = os.path.join(root, dir_name)
+            try:
+                # Check if directory is empty (ignoring @eaDir)
+                contents = [f for f in os.listdir(dir_path) if f != '@eaDir']
+                if not contents:
+                    try:
+                        os.rmdir(dir_path)
+                        logger.info(f"Removed empty directory: {dir_path}")
+                    except OSError:
+                        # Directory might contain only @eaDir, try to remove anyway
+                        shutil.rmtree(dir_path)
+                        logger.info(f"Removed directory with only @eaDir: {dir_path}")
+            except Exception as e:
+                logger.warning(f"Failed to process directory {dir_path}: {e}")
+
+def process_directory(source_dir: str) -> None:
+    """
+    Process a single source directory, organizing its photos/videos.
+
+    Args:
+        source_dir: Source directory to process
+    """
+    for root, dirs, files in os.walk(source_dir):
         # Remove Synology @eaDir folders from the search list
         dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
         
@@ -100,26 +166,34 @@ def main() -> None:
             ext = file.lower().split('.')[-1]
             path = os.path.join(root, file)
 
-            if ext in RAW_EXTS | REGULAR_EXTS:  # Using set union for faster lookup
+            if ext in MEDIA_EXTS:
                 date_taken = get_date_taken(path)
                 if not date_taken:
-                    logging.warning(f"No date found, file skipped: {path}")
+                    logger.warning(f"No date found, file skipped: {path}")
                     continue
 
-                if ext in RAW_EXTS:
-                    dest_folder = os.path.join(RAW_BASE,
-                                             date_taken.strftime('%Y'),
-                                             date_taken.strftime('%m'),
-                                             date_taken.strftime('%d'))
-                else:
-                    dest_folder = os.path.join(REGULAR_BASE,
-                                             date_taken.strftime('%Y'),
-                                             date_taken.strftime('%Y-%m'),
-                                             date_taken.strftime('%Y-%m-%d'))
+                dest_folder = os.path.join(PHOTOS_BASE,
+                                         date_taken.strftime('%Y'),
+                                         date_taken.strftime('%m'))
 
                 move_file(path, dest_folder)
             else:
-                logging.info(f"Skipped file with unknown extension: {path}")
+                logger.info(f"Skipped file with unknown extension: {path}")
+    
+    # Clean up empty directories after processing
+    remove_empty_dirs(source_dir)
+
+def main() -> None:
+    """
+    Main function that walks through all source folders and organizes photos/videos
+    into date-based directory structure.
+    """
+    for source_folder in SOURCE_FOLDERS:
+        if os.path.exists(source_folder):
+            logger.info(f"Processing directory: {source_folder}")
+            process_directory(source_folder)
+        else:
+            logger.warning(f"Source folder does not exist: {source_folder}")
 
 if __name__ == "__main__":
     main()
