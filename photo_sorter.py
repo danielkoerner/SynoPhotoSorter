@@ -179,9 +179,14 @@ def process_directory(source_dir: str) -> None:
                     logger.warning(f"No date found, file skipped: {path}")
                     continue
 
+                year = date_taken.strftime('%Y')
+                month = date_taken.strftime('%Y-%m')
+                day = date_taken.strftime('%Y-%m-%d')
+
                 dest_folder = os.path.join(PHOTOS_BASE,
-                                         date_taken.strftime('%Y'),
-                                         date_taken.strftime('%m'))
+                                         year,
+                                         month,
+                                         day)
 
                 move_file(path, dest_folder)
             else:
