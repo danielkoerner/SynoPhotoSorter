@@ -37,6 +37,9 @@ MEDIA_EXTS = {'jpg', 'jpeg', 'png', 'heic', 'mov', 'mp4', 'gif', 'avi', 'mpg', '
 # Synology specific directories to exclude
 EXCLUDE_DIRS = {'@eaDir'}
 
+# System files to ignore when checking if directory is empty
+IGNORE_FILES = {'Thumbs.db', '.DS_Store', '@eaDir'}
+
 def cleanup_old_logs(max_logs: int = 30):
     """
     Clean up old log files, keeping only the most recent ones.
@@ -130,6 +133,8 @@ def move_file(src: str, dest: str) -> None:
 def remove_empty_dirs(path: str) -> None:
     """
     Remove empty directories recursively from bottom up.
+    Directories containing only system files (Thumbs.db, .DS_Store) or @eaDir
+    are considered empty.
     
     Args:
         path: Starting path to check for empty directories
@@ -138,16 +143,18 @@ def remove_empty_dirs(path: str) -> None:
         for dir_name in dirs:
             dir_path = os.path.join(root, dir_name)
             try:
-                # Check if directory is empty (ignoring @eaDir)
-                contents = [f for f in os.listdir(dir_path) if f != '@eaDir']
+                # Get directory contents, excluding system files
+                contents = [f for f in os.listdir(dir_path) 
+                          if f not in IGNORE_FILES and 
+                          not any(f.startswith(ignore) for ignore in IGNORE_FILES)]
+                
                 if not contents:
                     try:
-                        os.rmdir(dir_path)
-                        logger.info(f"Removed empty directory: {dir_path}")
-                    except OSError:
-                        # Directory might contain only @eaDir, try to remove anyway
+                        # Try to remove the directory and its contents
                         shutil.rmtree(dir_path)
-                        logger.info(f"Removed directory with only @eaDir: {dir_path}")
+                        logger.info(f"Removed directory with only system files: {dir_path}")
+                    except Exception as e:
+                        logger.warning(f"Failed to remove directory {dir_path}: {e}")
             except Exception as e:
                 logger.warning(f"Failed to process directory {dir_path}: {e}")
 
